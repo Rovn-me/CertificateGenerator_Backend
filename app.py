@@ -1,73 +1,71 @@
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, send_file
 from flask_cors import CORS
 from PIL import Image, ImageDraw, ImageFont
-import csv, io, zipfile, os, time
-from datetime import datetime
+import csv
+import io
+import zipfile
+import json
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all origins
+CORS(app)
 
 @app.route('/generate', methods=['POST'])
 def generate_certificates():
-    log("Received certificate generation request")
+    try:
+        print("[Server] Received request...")
 
-    template_file = request.files.get('template')
-    font_file = request.files.get('font')
-    csv_file = request.files.get('csv')
-    fields = request.form.get('fields')
+        # Get files and data
+        template_file = request.files.get('template')
+        font_file = request.files.get('font')
+        csv_file = request.files.get('csv')
+        color_hex = request.form.get('color', '#000000')
+        fields = json.loads(request.form.get('fields', '[]'))
 
-    if not template_file or not font_file or not csv_file or not fields:
-        return jsonify({'error': 'Missing file or field data'}), 400
+        print(f"[Server] Color: {color_hex}")
+        print(f"[Server] Fields: {fields}")
 
-    fields = eval(fields)  # convert JSON string to list of dicts
-    log(f"Fields received: {fields}")
+        if not template_file or not font_file or not csv_file:
+            return {"error": "Missing one or more required files"}, 400
 
-    font_path = 'temp_font.ttf'
-    template_path = 'temp_template.png'
+        # Read input files
+        template_data = template_file.read()
+        font_data = io.BytesIO(font_file.read())
+        csv_data = csv.DictReader(io.StringIO(csv_file.read().decode('utf-8')))
+        entries = list(csv_data)
 
-    # Save template and font temporarily
-    template_file.save(template_path)
-    font_file.save(font_path)
+        zip_buffer = io.BytesIO()
 
-    image = Image.open(template_path)
-    width, height = image.size
+        with zipfile.ZipFile(zip_buffer, 'w') as zipf:
+            for idx, row in enumerate(entries):
+                print(f"[Server] Generating for: {row}")
+                img = Image.open(io.BytesIO(template_data)).convert("RGBA")
+                draw = ImageDraw.Draw(img)
 
-    # Prepare ZIP in memory
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w') as zipf:
-        reader = csv.DictReader(io.StringIO(csv_file.read().decode()))
-        for i, row in enumerate(reader):
-            cert = image.copy()
-            draw = ImageDraw.Draw(cert)
-
-            for field in fields:
-                name = field['name']
-                x, y, size = field['x'], field['y'], field['size']
-                text = row.get(name, '')
-
-                log(f"[{i+1}] Adding '{text}' at ({x},{y}) with size {size}")
-
-                font = ImageFont.truetype(font_path, size)
-                draw.text((x, y), text, font=font, fill='white')
-
-            filename = f"{i+1}_{row.get(fields[0]['name'], 'unknown').replace(' ', '_')}.png"
-            buffer = io.BytesIO()
-            cert.save(buffer, format="PNG")
-            buffer.seek(0)
-            zipf.writestr(filename, buffer.read())
-
-    zip_buffer.seek(0)
-
-    # Cleanup
-    os.remove(template_path)
-    os.remove(font_path)
-
-    log("Certificates generated successfully. Sending ZIP file.")
-    return send_file(zip_buffer, mimetype='application/zip', as_attachment=True, download_name='certificates.zip')
+                for field in fields:
+                    value = row.get(field['name'], '')
+                    if not value:
+                        continue
+                    
+                    font_data.seek(0)  # ✅ Reset pointer before loading
+                    font = ImageFont.truetype(font_data, size=int(field['size']))
+                    draw.text((int(field['x']), int(field['y'])), value, font=font, fill=color_hex)
+                    print(f"    ↳ {field['name']}: '{value}' at ({field['x']}, {field['y']})")
 
 
-def log(message):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
+                img_io = io.BytesIO()
+                filename = f"{idx+1}_{row[fields[0]['name']].replace(' ', '_')}.png"
+                img.save(img_io, format='PNG')
+                img_io.seek(0)
+                zipf.writestr(filename, img_io.read())
+
+        zip_buffer.seek(0)
+        print("[Server] ZIP ready. Sending to frontend.")
+        return send_file(zip_buffer, download_name='certificates.zip', as_attachment=True)
+
+    except Exception as e:
+        print(f"[Server] ❌ Error: {e}")
+        return {"error": str(e)}, 500
 
 if __name__ == '__main__':
-    app.run(debug=True, port=8030)
+    print("🚀 Flask backend running at http://localhost:8030")
+    app.run(port=8030, debug=True)

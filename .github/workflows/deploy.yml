@@ -1,0 +1,45 @@
+# .github/workflows/deploy.yml
+name: Deploy Certificate Generator App via Self-Hosted Runner
+
+on:
+  push:
+    branches:
+      - main # Or your deployment branch (e.g., master, production)
+
+jobs:
+  deploy:
+    runs-on: self-hosted # IMPORTANT: This job runs on your configured self-hosted runner
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4 # Checks out your repository code onto the runner
+
+      - name: Build Docker Image
+        # Builds the Docker image using the Dockerfile in your repo
+        # Tags it with the unique commit SHA and 'latest'
+        run: docker build -t certificate-generator:${{ github.sha }} -t certificate-generator:latest .
+
+      - name: Stop Existing Container
+        # Stops the container named 'certificate-generator-app' if it exists
+        # '|| true' prevents the workflow from failing if the container isn't running
+        run: docker stop certificate-generator-app || true
+
+      - name: Remove Existing Container
+        # Removes the stopped container named 'certificate-generator-app' if it exists
+        # '|| true' prevents the workflow from failing if the container doesn't exist
+        run: docker rm certificate-generator-app || true
+
+      - name: Start New Container
+        # Runs a new container from the image built earlier
+        run: |
+          docker run -d \
+            --name certificate-generator-app \
+            -p 8030:8030 \
+            --restart always \
+            certificate-generator:${{ github.sha }}
+
+      - name: Clean up old images
+        # Removes Docker images older than 12 hours to save disk space
+        # Use with caution, ensure it doesn't remove images you might need
+        if: success() # Only run cleanup if previous steps succeeded
+        run: docker image prune -f --filter "until=12h"
